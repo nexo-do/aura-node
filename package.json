@@ -1,6 +1,6 @@
 {
   "name": "@nexo-do/aura-sdk",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "SDK oficial de Aura — facturación electrónica DGII (e-CF) para Node/TypeScript",
   "license": "Apache-2.0",
   "author": "Nativo Digital LLC",
