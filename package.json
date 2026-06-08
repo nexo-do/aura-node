@@ -1,0 +1,42 @@
+{
+  "name": "@nexo-do/aura-sdk",
+  "version": "0.1.0",
+  "description": "SDK oficial de Aura — facturación electrónica DGII (e-CF) para Node/TypeScript",
+  "license": "Apache-2.0",
+  "author": "Nativo Digital LLC",
+  "homepage": "https://nexo.com.do/aura",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexo-do/aura-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nexo-do/aura-node/issues"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["aura", "dgii", "ecf", "e-cf", "facturacion-electronica", "republica-dominicana"],
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "vitest": "^2.0.0"
+  }
+}
