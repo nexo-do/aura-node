@@ -251,3 +251,197 @@ export interface CommercialApprovalParams {
   status: 'ACCEPTED' | 'REJECTED'
   reason?: string
 }
+
+/** Resultado 202 de aprobación comercial (`commercial-approval`). */
+export interface CommercialApprovalResult {
+  id: string
+  queued: boolean
+  [key: string]: unknown
+}
+
+/** Payload de `POST /v1/vouchers/receive`. */
+export interface ReceiveVoucherParams {
+  clientId: string
+  /** XML firmado recibido del emisor (texto crudo o base64). */
+  signedXml: string
+}
+
+export interface ReceiveVoucherResult {
+  voucherId: string
+  [key: string]: unknown
+}
+
+// ===== Clients (emisores RNC) ===============================================
+
+/** Ambiente DGII. `TesteCF`/`CerteCF` = pruebas/certificación; `eCF` = producción. */
+export type DgiiEnv = 'TesteCF' | 'CerteCF' | 'eCF'
+
+/** Payload de `POST /v1/clients`. */
+export interface CreateClientParams {
+  /** RNC del emisor — 9 u 11 dígitos. */
+  rnc: string
+  legalName: string
+  tradeName?: string
+  address: string
+  municipality?: string
+  province?: string
+  /** Hasta 3 teléfonos. */
+  phones?: string[]
+  email?: string
+  economicActivity?: string
+  /** Ambiente activo del cliente. Default `TesteCF`. */
+  activeEnv?: DgiiEnv
+  /** URL de recepción de e-CF (P2P). */
+  receptionUrl?: string
+  commercialApprovalUrl?: string
+  authenticationUrl?: string
+  settings?: Record<string, unknown>
+}
+
+export type UpdateClientParams = Partial<CreateClientParams>
+
+/** Cliente (emisor) persistido. */
+export interface Client {
+  id: string
+  rnc: string
+  legalName: string
+  tradeName?: string | null
+  activeEnv?: DgiiEnv
+  /** Algunos endpoints exponen el ambiente como `env`. */
+  env?: DgiiEnv
+  isActive?: boolean
+  contingencyMode?: boolean
+  contingencyAuthorizedUntil?: string | null
+  certificateExpiresAt?: string | null
+  [key: string]: unknown
+}
+
+/** Payload de subida de certificado P12 (`POST /v1/clients/:id/certificate`). */
+export interface UploadCertificateParams {
+  /** PKCS#12 en base64. */
+  p12Base64: string
+  password: string
+}
+
+export interface UploadCertificateResult {
+  ok: boolean
+  /** Fecha de expiración del certificado (ISO) o null si no se pudo parsear. */
+  expiresAt: string | null
+  [key: string]: unknown
+}
+
+/** Secuencia/rango NCF de un cliente. */
+export interface Sequence {
+  id: string
+  typeId: EcfTypeId
+  /** Próximo número a emitir dentro del rango. */
+  currentNumber: number
+  startOn: number
+  stopOn: number
+  /** Vencimiento del rango (ISO yyyy-mm-dd) o null (E32/E34 no vencen). */
+  expireAt: string | null
+  env: DgiiEnv
+  [key: string]: unknown
+}
+
+/** Payload de `POST /v1/clients/:id/sequences`. */
+export interface CreateSequenceParams {
+  typeId: EcfTypeId
+  env: DgiiEnv
+  startOn: number
+  stopOn: number
+  /** yyyy-mm-dd. Omitir para rangos sin vencimiento (E32/E34). */
+  expireAt?: string
+}
+
+/**
+ * Payload de `PATCH /v1/clients/:id/sequences/:seqId`. `typeId`/`env` son
+ * inmutables. `expireAt: null` **borra** el vencimiento; `undefined` lo deja igual.
+ */
+export interface UpdateSequenceParams {
+  startOn?: number
+  stopOn?: number
+  expireAt?: string | null
+}
+
+export interface DeleteResult {
+  ok: boolean
+  [key: string]: unknown
+}
+
+// ===== Webhooks (gestión de suscripciones) ==================================
+
+/** Catálogo canónico de eventos webhook de Aura. */
+export const WEBHOOK_EVENTS = [
+  'voucher.signed',
+  'voucher.in_process',
+  'voucher.accepted',
+  'voucher.conditional',
+  'voucher.rejected',
+  'voucher.not_found',
+  'voucher.voided',
+  'voucher.autovoided',
+  'voucher.received',
+  'voucher.commercial_approval',
+  'certification.stage_changed',
+  'certification.artifact_uploaded',
+  'certificate.expiring',
+  'sequence.low',
+  'sequence.expiring',
+  'billing.payment_failed',
+  'billing.free_quota_warning',
+  'billing.free_quota_reached'
+] as const
+
+export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]
+
+/** Payload de `POST /v1/webhooks`. */
+export interface CreateWebhookParams {
+  name: string
+  url: string
+  events: WebhookEvent[]
+  /** Limita el webhook a un cliente específico. */
+  clientId?: string
+  /** `live` = solo eventos eCF; `test` = solo TesteCF/CerteCF; omitido = todos. */
+  mode?: 'test' | 'live'
+  /** Secret custom (mín 16 chars). Omitir para que el servidor genere uno seguro. */
+  secret?: string
+}
+
+export interface UpdateWebhookParams extends Partial<CreateWebhookParams> {
+  isActive?: boolean
+}
+
+/** Webhook (proyección segura — nunca expone el secret). */
+export interface Webhook {
+  id: string
+  name: string
+  url: string
+  events: WebhookEvent[]
+  clientId?: string | null
+  mode?: 'test' | 'live' | null
+  isActive: boolean
+  /** true si el webhook tiene secret configurado. El valor nunca se expone. */
+  hasSecret: boolean
+  createdAt?: string
+  [key: string]: unknown
+}
+
+/** Respuesta de creación: incluye el `secret` en PLANO, **una sola vez**. */
+export interface CreateWebhookResult extends Webhook {
+  secret: string
+}
+
+/** Respuesta de rotación de secret. */
+export interface RotateSecretResult {
+  id: string
+  secret: string
+}
+
+/** Intento de entrega de un webhook. */
+export interface WebhookDelivery {
+  id: string
+  event: string
+  status: string
+  [key: string]: unknown
+}
