@@ -1,5 +1,7 @@
 import { AuraError, type AuraErrorType } from './errors.js'
 import { Vouchers } from './resources/vouchers.js'
+import { Clients } from './resources/clients.js'
+import { Webhooks } from './resources/webhooks.js'
 
 export interface AuraOptions {
   /**
@@ -32,6 +34,10 @@ const DEFAULT_BASE_URL = 'https://aura.nexo.com.do/api/v1'
 
 export class Aura {
   readonly vouchers: Vouchers
+  /** Gestión de clientes (emisores), certificado y secuencias NCF. */
+  readonly clients: Clients
+  /** Gestión de suscripciones a webhooks (+ `verifySignature`). */
+  readonly webhooks: Webhooks
 
   private readonly apiKey: string
   private readonly baseUrl: string
@@ -53,6 +59,8 @@ export class Aura {
     }
 
     this.vouchers = new Vouchers(this)
+    this.clients = new Clients(this)
+    this.webhooks = new Webhooks(this)
   }
 
   /** `test` | `live` | `legacy`, derivado del prefijo de la API Key. */
