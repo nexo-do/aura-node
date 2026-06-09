@@ -82,11 +82,13 @@ Todos los métodos aceptan un último parámetro opcional `options` (ver
 | Método | HTTP | Devuelve |
 | --- | --- | --- |
 | `aura.vouchers.issue(params, options?)` | `POST /vouchers` · 202 | `IssueVoucherResult` |
+| `aura.vouchers.issueAndWait(params, options?)` | `POST /vouchers` + polling | `Voucher` |
 | `aura.vouchers.retrieve(id, options?)` | `GET /vouchers/:id` | `Voucher` |
 | `aura.vouchers.list(params?, options?)` | `GET /vouchers` | `ListVouchersResult` |
 | `aura.vouchers.refresh(id, options?)` | `POST /vouchers/:id/refresh` · 202 | `IssueVoucherResult` |
 | `aura.vouchers.void(id, params, options?)` | `POST /vouchers/:id/void` · 202 | `IssueVoucherResult` |
-| `aura.vouchers.commercialApproval(id, params, options?)` | `POST /vouchers/:id/commercial-approval` · 202 | `IssueVoucherResult` |
+| `aura.vouchers.commercialApproval(id, params, options?)` | `POST /vouchers/:id/commercial-approval` · 202 | `CommercialApprovalResult` |
+| `aura.vouchers.receive(params, options?)` | `POST /vouchers/receive` · 201 | `ReceiveVoucherResult` |
 
 ```ts
 // Emitir (202 — async). Pasa idempotencyKey para que un reintento no consuma un NCF nuevo.
@@ -106,7 +108,39 @@ await aura.vouchers.void(id, { reason: 'Cliente canceló la compra', modificatio
 
 // Aprobación comercial (ACECF) sobre un e-CF recibido (202)
 await aura.vouchers.commercialApproval(id, { status: 'ACCEPTED' })
+
+// Registrar un e-CF RECIBIDO de un proveedor (origin=RECEIVED, dispara webhook voucher.received)
+await aura.vouchers.receive({ clientId, signedXml })
 ```
+
+#### `issueAndWait` — emitir y esperar el QR
+
+`issue` devuelve 202 y la firma ocurre asíncrona: `qrUrl` y `securityCode` (lo que
+necesitas para imprimir la Representación Impresa) llegan después, por `GET`/webhook.
+Cuando necesitas el QR **en el mismo flujo** (p.ej. imprimir el ticket al cerrar la
+venta), usa `issueAndWait`: emite y hace polling hasta tener la firma o agotar el tiempo.
+
+```ts
+const voucher = await aura.vouchers.issueAndWait(params, {
+  idempotencyKey: crypto.randomUUID(),
+  timeoutMs: 8000,  // máximo de espera (default 8000)
+  intervalMs: 350,  // intervalo de polling (default 350)
+})
+
+if (voucher.qrUrl) {
+  printTicket(voucher) // ya tiene qrUrl + securityCode
+} else {
+  // se agotó el tiempo sin firma: el webhook `voucher.signed` la completará
+}
+```
+
+- Lanza `AuraError` (`type: 'DGII_REJECTED'`) si DGII rechaza el comprobante (el detalle
+  va en `error.details` / `error.message`).
+- Si se agota `timeoutMs` sin firma, **no lanza**: devuelve el último estado conocido
+  (sin `qrUrl`) para que continúes por webhook.
+
+Esto reproduce el comportamiento del gateway de Backend/API (ver
+[MIGRATION-from-gateway.md](./MIGRATION-from-gateway.md)).
 
 El payload de `issue` (`IssueVoucherParams`) es mucho más rico que el ejemplo: soporta
 desglose por medio de pago, retenciones por línea (ISR/ITBIS), ISC y alcoholes,
@@ -129,6 +163,84 @@ const ac = new AbortController()
 setTimeout(() => ac.abort(), 2000)
 await aura.vouchers.list({ limit: 200 }, { signal: ac.signal })
 ```
+
+## Recurso `clients` (provisioning)
+
+Gestión de **emisores RNC**, su certificado P12 y sus **secuencias NCF**. Es la
+superficie de aprovisionamiento, separada del flujo de emisión.
+
+| Método | HTTP | Devuelve |
+| --- | --- | --- |
+| `aura.clients.create(params, options?)` | `POST /clients` · 201 | `Client` |
+| `aura.clients.list(options?)` | `GET /clients` | `Client[]` |
+| `aura.clients.retrieve(id, options?)` | `GET /clients/:id` | `Client` |
+| `aura.clients.update(id, params, options?)` | `PATCH /clients/:id` | `Client` |
+| `aura.clients.uploadCertificate(id, params, options?)` | `POST /clients/:id/certificate` | `UploadCertificateResult` |
+| `aura.clients.sequences.list(clientId, options?)` | `GET /clients/:id/sequences` | `Sequence[]` |
+| `aura.clients.sequences.create(clientId, params, options?)` | `POST /clients/:id/sequences` · 201 | `Sequence` |
+| `aura.clients.sequences.update(clientId, seqId, params, options?)` | `PATCH …/sequences/:seqId` | `Sequence` |
+| `aura.clients.sequences.delete(clientId, seqId, options?)` | `DELETE …/sequences/:seqId` | `DeleteResult` |
+
+```ts
+// 1) Crear el emisor
+const client = await aura.clients.create({
+  rnc: '131234567',
+  legalName: 'Cliente Demo SRL',
+  address: 'Av. Winston Churchill 100, Santo Domingo',
+  activeEnv: 'TesteCF',
+})
+
+// 2) Subir su certificado P12 (base64). Material sensible → solo HTTPS, nunca se loguea.
+import { readFileSync } from 'node:fs'
+const { expiresAt } = await aura.clients.uploadCertificate(client.id, {
+  p12Base64: readFileSync('cert.p12').toString('base64'),
+  password: process.env.P12_PASSWORD!,
+})
+
+// 3) Registrar un rango NCF. Omite expireAt para rangos sin vencimiento (E32/E34).
+await aura.clients.sequences.create(client.id, {
+  typeId: '31', env: 'TesteCF', startOn: 1, stopOn: 1000, expireAt: '2026-12-31',
+})
+
+// Editar: expireAt:null BORRA el vencimiento; omitirlo lo deja igual. typeId/env son inmutables.
+await aura.clients.sequences.update(client.id, seqId, { stopOn: 2000, expireAt: null })
+```
+
+> El **modo (test/live) sale de la API Key**, pero las operaciones de gestión (crear
+> client, secuencias, certificado) las haces normalmente con la key **live** del project.
+> Instancia un `Aura` con la key correcta según el ambiente que estés aprovisionando.
+
+## Recurso `webhooks` (gestión de suscripciones)
+
+Alta/baja/listado de webhooks y rotación de secret. **No confundir** con `verifyWebhook`
+(verificación de firma de webhooks entrantes, más abajo).
+
+| Método | HTTP | Devuelve |
+| --- | --- | --- |
+| `aura.webhooks.create(params, options?)` | `POST /webhooks` · 201 | `CreateWebhookResult` (incluye `secret` una vez) |
+| `aura.webhooks.list(options?)` | `GET /webhooks` | `Webhook[]` (nunca expone el secret) |
+| `aura.webhooks.update(id, params, options?)` | `PATCH /webhooks/:id` | `Webhook` |
+| `aura.webhooks.delete(id, options?)` | `DELETE /webhooks/:id` · 204 | `void` |
+| `aura.webhooks.listDeliveries(id, options?)` | `GET /webhooks/:id/deliveries` | `WebhookDelivery[]` |
+| `aura.webhooks.rotateSecret(id, options?)` | `POST /webhooks/:id/rotate-secret` | `RotateSecretResult` |
+| `aura.webhooks.verifySignature(rawBody, headers, secret, options?)` | — (local) | `void` |
+
+```ts
+// Crear: el `secret` se devuelve en PLANO UNA sola vez — guárdalo ya.
+const wh = await aura.webhooks.create({
+  name: 'Nexo prod',
+  url: 'https://api.nexo.com.do/v2/aura/webhook',
+  events: ['voucher.accepted', 'voucher.rejected', 'voucher.voided'],
+  mode: 'live', // solo eventos eCF; usa 'test' para pruebas, omite para todos
+})
+await saveSecret(wh.id, wh.secret) // no vuelve a exponerse
+
+// Rotar el secret (invalida el anterior)
+const { secret } = await aura.webhooks.rotateSecret(wh.id)
+```
+
+Los `events` están **tipados** (`WebhookEvent`) y se exporta el catálogo canónico como
+`WEBHOOK_EVENTS`.
 
 ## Manejo de errores
 
@@ -229,14 +341,23 @@ import type { IssueVoucherParams, Voucher, EcfTypeId } from '@nexo-do/aura-sdk'
 
 ## Alcance
 
-Este SDK cubre el **núcleo de emisión** — el flujo que concentra la gran mayoría de las
-integraciones: emitir, consultar, listar, anular, aprobar comercialmente y verificar
-webhooks.
+Este SDK cubre **toda la superficie de Aura que consume una integración de emisión + recepción
++ provisioning**:
 
-Para lo demás (certificación de 14 pasos, contingencia, generación de la Representación
-Impresa en PDF/térmica, gestión de clients y certificados, reports, retention y billing)
-usa el **API REST** directamente — referencia viva en
-[aura.nexo.com.do/docs](https://aura.nexo.com.do/docs).
+- **Emisión** — `vouchers`: `issue` / `issueAndWait`, `retrieve`, `list`, `refresh`, `void`
+  (ANECF), `commercialApproval` (ACECF), `receive`.
+- **Provisioning** — `clients`: alta/edición/consulta, `uploadCertificate`, y `sequences`
+  (CRUD de rangos NCF).
+- **Webhooks** — gestión de suscripciones (`webhooks.*`) + verificación de firma
+  (`verifyWebhook` / `aura.webhooks.verifySignature`).
+
+Cubre el 100% de los endpoints que usa el gateway e-CF de Backend/API — ver el mapeo
+1:1 en [MIGRATION-from-gateway.md](./MIGRATION-from-gateway.md).
+
+Lo que **no** cubre (usa el **API REST** directamente — referencia viva en
+[aura.nexo.com.do/docs](https://aura.nexo.com.do/docs)): certificación de 14 pasos,
+contingencia, generación de la Representación Impresa en PDF/térmica, reports, retention
+y billing.
 
 ## Enlaces
 
